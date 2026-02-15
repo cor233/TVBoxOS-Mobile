@@ -41,8 +41,8 @@ jobs:
         run: |
           SOURCE_REPO="XiaoRanLiu3119/TVBoxOS-Mobile"
           TARGET_REPO="${{ github.repository }}"
-          RELEASES_JSON=$(cat releases.json)
-          echo "$RELEASES_JSON" | jq -c '.[]' | while read release; do
+          jq -r '.[] | @base64' releases.json | while read release_b64; do
+            release=$(echo "$release_b64" | base64 --decode)
             TAG_NAME=$(echo "$release" | jq -r '.tag_name')
             BODY=$(echo "$release" | jq -r '.body // ""')
             echo "Processing release: $TAG_NAME"
