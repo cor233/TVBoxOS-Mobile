@@ -1,9 +1,12 @@
-name: Sync All Releases with Order
+name: 同步Releases
 
 on:
   workflow_dispatch:
   schedule:
     - cron: '0 */4 * * *'
+
+permissions:
+  contents: write
 
 jobs:
   sync-all-releases:
@@ -21,7 +24,12 @@ jobs:
           RELEASES_JSON=""
           while true; do
             API_URL="https://api.github.com/repos/${SOURCE_REPO}/releases?per_page=${PER_PAGE}&page=${PAGE}"
-            RESPONSE=$(curl -s -H "Accept: application/vnd.github.v3+json" "$API_URL")
+            RESPONSE=$(curl -s -H "Accept: application/vnd.github.v3+json" -H "Authorization: token ${{ github.token }}" "$API_URL")
+            if ! echo "$RESPONSE" | jq -e 'type == "array"' > /dev/null; then
+              echo "错误：API 响应不是数组，可能已达到速率限制或仓库不可访问。"
+              echo "响应内容：$RESPONSE"
+              exit 1
+            fi
             if [ "$(echo "$RESPONSE" | jq length)" -eq 0 ]; then
               break
             fi
@@ -46,22 +54,27 @@ jobs:
             TAG_NAME=$(echo "$release" | jq -r '.tag_name')
             BODY=$(echo "$release" | jq -r '.body // ""')
             echo "Processing release: $TAG_NAME"
-            if gh release view "$TAG_NAME" --repo "$TARGET_REPO" &>/dev/null; then
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" -H "Authorization: token $GH_TOKEN" -H "Accept: application/vnd.github.v3+json" "https://api.github.com/repos/$TARGET_REPO/releases/tags/$TAG_NAME")
+            if [ "$HTTP_STATUS" -eq 200 ]; then
               echo "Release $TAG_NAME already exists, skipping."
               continue
+            elif [ "$HTTP_STATUS" -eq 404 ]; then
+              echo "Release $TAG_NAME does not exist, creating."
+            else
+              echo "Warning: unexpected status code $HTTP_STATUS when checking release, will attempt to create."
             fi
             echo "$BODY" > body.txt
-            gh release create "$TAG_NAME" \
-              --repo "$TARGET_REPO" \
-              --title "$TAG_NAME" \
-              --notes-file body.txt
+            if ! gh release create "$TAG_NAME" --repo "$TARGET_REPO" --title "$TAG_NAME" --notes-file body.txt; then
+              echo "Failed to create release $TAG_NAME, exiting."
+              exit 1
+            fi
             ASSET_URLS=$(echo "$release" | jq -r '.assets[]?.browser_download_url')
             if [ -n "$ASSET_URLS" ]; then
               mkdir -p "assets_$TAG_NAME"
               cd "assets_$TAG_NAME"
               echo "$ASSET_URLS" | while read url; do
                 if [ -n "$url" ]; then
-                  curl -s -L -O "$url"
+                  curl -s -fL -O "$url"
                 fi
               done
               for file in *; do
